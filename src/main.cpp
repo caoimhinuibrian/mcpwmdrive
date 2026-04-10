@@ -16,9 +16,6 @@ WebServer server(80);
 SystemState currentState = IDLE;
 Target targets[20];
 int activeTargetCount = 0;
-//char command = ' ';
-//int32_t commandSteps=0;
-//int32_t totalDistanceMM=0;
 uint32_t totalSteps=0;
 bool motorDirection=true;
 
@@ -63,10 +60,6 @@ void setup() {
     pcnt_counter_clear(PCNT_UNIT_0);
     currentSteps = 0;
     Serial.println("System Ready. Carriage is at ZERO.");
-          //digitalWrite(5, LOW);
-          //delay(1000);
-          //digitalWrite(5, HIGH);
-
 }
 void foo() {
 
@@ -154,7 +147,6 @@ void resetPosition() {
 
 void returnHome() {
     updatePosition();
-    // Calculate distance based on current position
     //float mmToReturn = (float)currentSteps / STEPS_PER_MM;
     
     if (currentSteps > 0) {
@@ -387,8 +379,6 @@ void initPCNT() {
     pcnt_config.channel        = PCNT_CHANNEL_0;
     pcnt_config.pos_mode       = PCNT_COUNT_INC;
     pcnt_config.neg_mode       = PCNT_COUNT_DIS;
-    //pcnt_config.hctrl_mode     = PCNT_MODE_KEEP;
-    //pcnt_config.lctrl_mode     = PCNT_MODE_REVERSE;
     pcnt_config.lctrl_mode     = PCNT_MODE_KEEP;
     pcnt_config.hctrl_mode     = PCNT_MODE_KEEP;
     
@@ -402,15 +392,13 @@ void initPCNT() {
     // Matrix links
     gpio_matrix_in((gpio_num_t)PCNT_INPUT_PIN, 45, false);
     gpio_matrix_in((gpio_num_t)DIR_PIN, 46, false);
-pinMode(DIR_PIN, OUTPUT);
-// Force the pin to its maximum current sourcing level
-gpio_set_drive_capability((gpio_num_t)DIR_PIN, GPIO_DRIVE_CAP_3); 
+    pinMode(DIR_PIN, OUTPUT);
+    // Force the pin to its maximum current sourcing level
+    gpio_set_drive_capability((gpio_num_t)DIR_PIN, GPIO_DRIVE_CAP_3); 
 
-// Also do it for the pulse pin
-pinMode(STEP_PIN, OUTPUT);
-gpio_set_drive_capability((gpio_num_t)STEP_PIN, GPIO_DRIVE_CAP_3);
-    // REMOVE: pcnt_isr_register
-    // REMOVE: pcnt_intr_enable
+    // Also do it for the pulse pin
+    pinMode(STEP_PIN, OUTPUT);
+    gpio_set_drive_capability((gpio_num_t)STEP_PIN, GPIO_DRIVE_CAP_3);
 
     pcnt_counter_clear(PCNT_UNIT_0);
     int16_t pulse_count = 0;
