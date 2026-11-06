@@ -10,6 +10,7 @@
 #include "driver/gpio.h"
 #include "soc/mcpwm_periph.h"
 #include "math.h"
+#include <TelnetSpy.h>
 
 // --- Global State ---
 WebServer server(80); 
@@ -18,6 +19,7 @@ Target targets[20];
 int activeTargetCount = 0;
 uint32_t totalSteps=0;
 bool motorDirection=true;
+TelnetSpy SerialAndTelnet;
 
 // High-precision position tracking (Handles the 90cm travel)
 uint32_t overflowCount = 0; 
@@ -42,15 +44,28 @@ void moveWithRamp(uint32_t steps, bool forward);
 void stopMovement();
 void updatePosition();
 void fireSolenoid();
+#include <ArduinoOTA.h>
+
+void setupOTA() {
+    ArduinoOTA.setHostname("drawloom");
+    ArduinoOTA.setPassword("");  // no auth for dev convenience
+    ArduinoOTA.onStart([]() { SerialAndTelnet.println("OTA start"); });
+    ArduinoOTA.onEnd([]()   { SerialAndTelnet.println("OTA done — rebooting"); });
+    ArduinoOTA.onError([](ota_error_t e) { SerialAndTelnet.printf("OTA error [%u]\n", e); });
+    ArduinoOTA.begin();
+    SerialAndTelnet.println("OTA ready");
+}
 
 void setup() {
-    Serial.begin(115200);
+    SerialAndTelnet.begin(115200);
     initHardware();
 
     WiFi.begin(WIFI_SSID, WIFI_PASS);
-    Serial.print("Connecting WiFi");
-    while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
-    Serial.println("\nIP: " + WiFi.localIP().toString());
+    SerialAndTelnet.print("Connecting WiFi");
+    while (WiFi.status() != WL_CONNECTED) { delay(500); SerialAndTelnet.print("."); }
+    SerialAndTelnet.println("\nIP: " + WiFi.localIP().toString());
+
+    setupOTA();
 
     server.on("/run", HTTP_POST, handleNewTargets);
     server.begin();
@@ -59,12 +74,14 @@ void setup() {
     overflowCount = 0;
     pcnt_counter_clear(PCNT_UNIT_0);
     currentSteps = 0;
-    Serial.println("System Ready. Carriage is at ZERO.");
+    SerialAndTelnet.println("System Ready. Carriage is at ZERO.");
 }
 void foo() {
 
 }
 void loop() {
+    ArduinoOTA.handle();
+    SerialAndTelnet.handle();
     server.handleClient(); // Keep the web server alive
 
     switch (currentState) {
@@ -73,25 +90,25 @@ void loop() {
             break;
 
         case MOVE_WITH_TARGETS:
-            Serial.println("Ramping Motor ...");
+            SerialAndTelnet.println("Ramping Motor ...");
             moveWithRamp(totalSteps, true); 
             // Once moveWithRamp returns, we are DONE moving forward
             currentState = RETURNING;
             break;
 
         case MOVE:
-            Serial.printf("Ramping Motor for move by %d steps ...",totalSteps);
+            SerialAndTelnet.printf("Ramping Motor for move by %d steps ...",totalSteps);
             moveWithRamp(totalSteps, motorDirection); 
             // Once moveWithRamp returns, we are DONE moving forward
             currentState = IDLE;
             break;
 
         case RETURNING:
-            Serial.println("Initiating Return Journey...");
+            SerialAndTelnet.println("Initiating Return Journey...");
             returnHome(); 
             
             currentState = IDLE;
-            Serial.println("Sequence Complete. System IDLE.");
+            SerialAndTelnet.println("Sequence Complete. System IDLE.");
             break;
     }
 }
@@ -100,7 +117,7 @@ void updatePosition() {
     int16_t current_hw_count = 0;
     
     pcnt_get_counter_value(PCNT_UNIT_0, &current_hw_count);
-    //Serial.printf("current_hw_count=%d,overflowCount=%d\n",current_hw_count,overflowCount);
+    //SerialAndTelnet.printf("current_hw_count=%d,overflowCount=%d\n",current_hw_count,overflowCount);
     // Hardware jump detection: 32767 -> 0
     // The gap is ~32768. 
     // We check if the difference is "huge and negative"
@@ -108,7 +125,7 @@ void updatePosition() {
     int16_t diff = current_hw_count - last_hw_count;
 
     if (diff < -20000) {
-        //Serial.printf("positive overflow overflow=%dlast=%d, current=%d\n",overflowCount,last_hw_count,current_hw_count);
+        //SerialAndTelnet.printf("positive overflow overflow=%dlast=%d, current=%d\n",overflowCount,last_hw_count,current_hw_count);
         overflowCount += 32768; 
     } 
     // If you ever move backwards: 0 -> 32767
@@ -122,7 +139,7 @@ void updatePosition() {
         }
     }
     last_hw_count = current_hw_count;
-    //Serial.printf("updatePosition: previous steps=%d current steps=%d\n",currentSteps,overflowCount+current_hw_count);
+    //SerialAndTelnet.printf("updatePosition: previous steps=%d current steps=%d\n",currentSteps,overflowCount+current_hw_count);
     currentSteps = overflowCount + (uint16_t)current_hw_count;
 }
 
@@ -150,19 +167,20 @@ void returnHome() {
     //float mmToReturn = (float)currentSteps / STEPS_PER_MM;
     
     if (currentSteps > 0) {
-        Serial.printf("Returning Home:  (%d steps)\n", currentSteps);
+        SerialAndTelnet.printf("Returning Home:  (%d steps)\n", currentSteps);
         moveWithRamp(currentSteps, false); // false = backward
     }
 
     // Final Zeroing
     resetPosition(); 
-    Serial.println("System Re-Zeroed. Ready.");
+    SerialAndTelnet.println("System Re-Zeroed. Ready.");
 }
 
 void initHardware() {
     pinMode(STEP_PIN, OUTPUT);
     pinMode(DIR_PIN, OUTPUT);
     pinMode(SOLENOID_PIN, OUTPUT);
+    pinMode(9, OUTPUT);
     //mcpwm_gpio_init(MCPWM_UNIT_0, MCPWM0A, STEP_PIN); 
     // 1. Configure the physical pin as a generic output
     gpio_config_t io_conf = {};
@@ -203,18 +221,18 @@ void initHardware() {
     mcpwm_stop(MCPWM_UNIT_0, MCPWM_TIMER_0); 
     // ------------------------
 
-    Serial.println("Hardware logic initialized.");
+    SerialAndTelnet.println("Hardware logic initialized.");
 }
 
 void moveWithRamp(uint32_t totalSteps, bool forward) {
     resetPosition();
-    Serial.printf("moveWithRamp %u steps, currently %u\n",totalSteps,currentSteps);
+    SerialAndTelnet.printf("moveWithRamp %u steps, currently %u\n",totalSteps,currentSteps);
     if (forward) {
-      Serial.println("set direction forward");
+      SerialAndTelnet.println("set direction forward");
       digitalWrite(DIR_PIN, false);
     } else {
       digitalWrite(DIR_PIN, true);
-      Serial.println("set direction reverse");
+      SerialAndTelnet.println("set direction reverse");
     }
     //digitalWrite(DIR_PIN, forward ? HIGH : LOW);
     
@@ -233,7 +251,7 @@ void moveWithRamp(uint32_t totalSteps, bool forward) {
     // THE SYNCED LOOP: Run until currentSteps hits totalSteps
     while (currentSteps < totalSteps) {
         updatePosition(); // Read hardware PCNT
-    //Serial.printf(" --- performed %u steps\n",currentSteps);
+    //SerialAndTelnet.printf(" --- performed %u steps\n",currentSteps);
         
         int32_t progressed = currentSteps;
 
@@ -277,7 +295,7 @@ void moveWithRamp(uint32_t totalSteps, bool forward) {
 
     stopMovement();
     updatePosition();
-    Serial.printf("Target reached: %u steps.\n", currentSteps);
+    SerialAndTelnet.printf("Target reached: %u steps.\n", currentSteps);
 }
 
 void stopMovement() {
@@ -285,7 +303,7 @@ void stopMovement() {
     mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A, 0.0);
     // 2. Stop the hardware timer
     mcpwm_stop(MCPWM_UNIT_0, MCPWM_TIMER_0);
-    Serial.println("Movement Stopped.");
+    SerialAndTelnet.println("Movement Stopped.");
 }
 
 void handleNewTargets() {
@@ -318,15 +336,61 @@ void handleNewTargets() {
     if (cmd=='S') {
         int steps = data.substring(1).toInt();
         if (steps > 0) {
-          Serial.printf("Forward Steps %d\n", steps);
+          SerialAndTelnet.printf("Forward Steps %d\n", steps);
           totalSteps = steps;
           motorDirection = true; //Forward
           currentState = MOVE;
         }
+    } else if (cmd=='D') {
+        int direction = data.substring(1).toInt();
+        currentState = IDLE;
+        if (direction > 0) {
+          SerialAndTelnet.printf("Set Forward Direction\n");
+          digitalWrite(DIR_PIN, true);
+        } else {
+          SerialAndTelnet.printf("Set Backward Direction\n");
+          digitalWrite(DIR_PIN, false);
+        }
+    } else if (cmd=='P') {
+        int percentage = data.substring(1).toInt();
+        stopMovement();
+        currentState = IDLE;
+        if (percentage > 0) {
+          SerialAndTelnet.printf("Set Pulse Duty Cycle to %d\n", percentage);
+          mcpwm_start(MCPWM_UNIT_0, MCPWM_TIMER_0);
+          mcpwm_set_frequency(MCPWM_UNIT_0, MCPWM_TIMER_0, 100);
+          mcpwm_set_duty(MCPWM_UNIT_0, MCPWM_TIMER_0, MCPWM_OPR_A, percentage);
+        }  
+    } else if (cmd=='X') {
+        int flag = data.substring(1).toInt();
+        currentState = IDLE;
+        if (flag > 0) {
+          SerialAndTelnet.printf("Turn Solenoid on\n");
+          digitalWrite(SOLENOID_PIN, true);
+        } else {
+          SerialAndTelnet.printf("Turn Solenoid off\n");
+          digitalWrite(SOLENOID_PIN, false);
+        }
+    } else if (cmd=='Y') {
+        currentState = IDLE;
+        for(int count=0;count<10;count++) {
+            fireSolenoid();
+        }
+    } else if (cmd=='N') {
+        int flag = data.substring(1).toInt();
+        currentState = IDLE;
+        if (flag > 0) {
+          SerialAndTelnet.printf("Turn pin 9 on\n");
+          digitalWrite(9, true);
+        } else {
+          SerialAndTelnet.printf("Turn pin 9 off\n");
+          digitalWrite(9, false);
+        }
+
     } else if (cmd=='B') {
         int steps = data.substring(1).toInt();
         if (steps > 0) {
-          Serial.printf("Reverse Steps %d\n", steps);
+          SerialAndTelnet.printf("Reverse Steps %d\n", steps);
           totalSteps = steps;
           motorDirection = false; //Reverse
           currentState = MOVE;
@@ -334,7 +398,7 @@ void handleNewTargets() {
     } else if (cmd=='F') {
         int cm = data.substring(1).toInt();
         if (cm > 0) {
-          Serial.printf("Forward %dcm\n", cm);
+          SerialAndTelnet.printf("Forward %dcm\n", cm);
           totalSteps = cm * STEPS_PER_MM * 10;
           motorDirection = true; //Forward
           currentState = MOVE;
@@ -342,7 +406,7 @@ void handleNewTargets() {
     } else if (cmd=='R') {
         int cm = data.substring(1).toInt();
         if (cm > 0) {
-          Serial.printf("Reverse %dcm\n", cm);
+          SerialAndTelnet.printf("Reverse %dcm\n", cm);
           totalSteps = cm * STEPS_PER_MM * 10;
           motorDirection = false; //Reverse
           currentState = MOVE;
@@ -351,14 +415,14 @@ void handleNewTargets() {
       char* p = strtok(buf, ",");
       while (p != NULL && activeTargetCount < 20) {
           float pos = atof(p);
-          Serial.printf("pos = %f\n",pos);
+          SerialAndTelnet.printf("pos = %f\n",pos);
           targets[activeTargetCount].positionMM = pos;
           targets[activeTargetCount].fireStep = (int32_t)(pos * STEPS_PER_MM) - (int32_t)leadSteps;
           targets[activeTargetCount].completed = false;
           activeTargetCount++;
           p = strtok(NULL, ",");
       }
-      Serial.printf("activeTargetCount=%d\n",activeTargetCount);
+      SerialAndTelnet.printf("activeTargetCount=%d\n",activeTargetCount);
 
       if (activeTargetCount > 0) {
           server.send(200, "text/plain", "Run Initiated");
@@ -403,9 +467,9 @@ void initPCNT() {
     pcnt_counter_clear(PCNT_UNIT_0);
     int16_t pulse_count = 0;
     pcnt_get_counter_value(PCNT_UNIT_0, &pulse_count);
-    Serial.printf("Current Position: %d steps\n", pulse_count);            
+    SerialAndTelnet.printf("Current Position: %d steps\n", pulse_count);            
     pcnt_counter_resume(PCNT_UNIT_0);
     pcnt_get_counter_value(PCNT_UNIT_0, &pulse_count);
-    Serial.printf("Current Position: %d steps\n",pulse_count );            
+    SerialAndTelnet.printf("Current Position: %d steps\n",pulse_count );            
 
 }
